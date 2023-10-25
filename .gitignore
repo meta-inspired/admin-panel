@@ -183,6 +183,6 @@ fabric.properties
 # .idea
 
 secrets.toml
-firestore-key.json
+dev-firestore-key.json
 .idea/
 key-to-toml.py

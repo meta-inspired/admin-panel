@@ -1,7 +1,5 @@
 import streamlit as st
 
-import pandas as pd
-from io import StringIO
 
 from lib.user.create_user import create_user
 
