@@ -186,3 +186,6 @@ secrets.toml
 dev-firestore-key.json
 .idea/
 key-to-toml.py
+
+# Nix/direnv
+.direnv

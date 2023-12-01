@@ -2,3 +2,5 @@ streamlit
 google-cloud-firestore
 firebase_admin
 openpyxl
+cachecontrol
+pandas

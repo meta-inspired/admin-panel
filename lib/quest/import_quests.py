@@ -1,59 +1,78 @@
-import argparse
 import io
-import os
 from contextlib import redirect_stdout
-from openpyxl import load_workbook
-from openpyxl.worksheet.worksheet import Worksheet
+from typing import Dict, Optional, TypedDict
+
 from firebase_admin import firestore
 from google.cloud.firestore import Client as FirestoreClient
+from openpyxl import load_workbook
+from openpyxl.worksheet.worksheet import Worksheet
 
 
-def import_journeys(db: FirestoreClient, worksheet: Worksheet) -> None:
-    for row in range(4, worksheet.max_row):
-        column_names = {}
-        current = 1
-        columns = worksheet.iter_cols(min_col=0, min_row=3, max_col=worksheet.max_column, max_row=3)
-        for column in columns:
-            column_names[column[0].value] = current
-            current += 1
+class Quest(TypedDict):
+    journey_id: int
+    chapter_id: int
+    quest_id: int
+    data: Dict
 
-        journey_id = worksheet.cell(row, column_names["EveryQuestJourney"]).value
 
-        if journey_id is None:
-            break
+def parse_quest_row(
+    worksheet: Worksheet, row: int, column_names: Dict[str, int]
+) -> Optional[Quest]:
+    journey_id = int(worksheet.cell(row, column_names["EveryQuestJourney"]).value)  # type: ignore
+    chapter_id = int(worksheet.cell(row, column_names["EveryQuestChapter"]).value)  # type: ignore
+    quest_id = int(worksheet.cell(row, column_names["EveryQuestId"]).value)  # type: ignore
 
-        choices = []
-        data = {
-            "after": "",
-            "before": "",
-            "chapterID": worksheet.cell(row, column_names["EveryQuestChapter"]).value,
-            "contentType": worksheet.cell(row, column_names["EveryQuestContenttype"]).value,
-            "journeyID": journey_id,
-            "title": worksheet.cell(row, column_names["EveryQuestTitle"]).value,
-            "tooltipEmoji": worksheet.cell(row, column_names["TooltipManagementTooltipemoji"]).value,
-            "successTooltip": worksheet.cell(row, column_names["TooltipManagementTooltiptext"]).value,
-        }
+    quest_str = f"{journey_id}:{chapter_id}:{quest_id}"
+    print(f"importing quest data for {quest_str}\n")
 
-        quest_type = worksheet.cell(row, column_names["EveryQuestContenttype"]).value
+    choices = []
+    data = {
+        "after": "",
+        "before": "",
+        "chapterID": str(chapter_id),
+        "contentType": worksheet.cell(row, column_names["EveryQuestContentType"]).value,
+        "journeyID": str(journey_id),
+        "title": worksheet.cell(row, column_names["EveryQuestTitle"]).value,
+        "tooltipEmoji": worksheet.cell(
+            row, column_names["TooltipManagementTooltipEmoji"]
+        ).value,
+        "successTooltip": worksheet.cell(
+            row, column_names["TooltipManagementTooltipText"]
+        ).value,
+    }
 
-        if quest_type == "video":
-            data["title"] = worksheet.cell(row, column_names["EveryQuestTitle"]).value
+    quest_type = worksheet.cell(row, column_names["EveryQuestContentType"]).value
+
+    match quest_type:
+        case "video":
+            url = worksheet.cell(row, column_names["VideoQuestVideoUrl"]).value
+            if url is None:
+                print(
+                    f"warning: video quest type requires a video URL, skipping {quest_str}\n"
+                )
             data["video"] = {
                 "duration": 0,
-                "thumbnailURL": worksheet.cell(row, column_names["VideoQuestThumbnailurl"]).value,
-                "url": worksheet.cell(row, column_names["VideoQuestVideourl"]).value,
+                "thumbnailURL": worksheet.cell(
+                    row, column_names["VideoQuestThumbnailUrl"]
+                ).value,
+                "url": url,
             }
-
-        elif quest_type == "riff":
-            data["title"] = worksheet.cell(row, column_names["EveryQuestTitle"]).value
+        case "riff":
+            question = worksheet.cell(row, column_names["RiffQuestion"]).value
+            if question is None:
+                print(
+                    f"warning: riff quest type requires a question, skipping {quest_str}\n"
+                )
+                return None
             data["riff"] = {
-                "question": worksheet.cell(row, column_names["RiffQuestion"]).value,
+                "question": question,
                 "tip": worksheet.cell(row, column_names["RiffTip"]).value,
             }
-
-        elif quest_type == "multiChoiceQuestion":
+        case "multiChoiceQuestion":
             for index in range(0, 6):
-                if worksheet.cell(row, index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"]).value:
+                if worksheet.cell(
+                    row, index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"]
+                ).value:
                     option = worksheet.cell(
                         row,
                         index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"],
@@ -64,11 +83,15 @@ def import_journeys(db: FirestoreClient, worksheet: Worksheet) -> None:
                     }
                     choices.append(choice)
 
-            data["answerQuestID"] = worksheet.cell(row, column_names["AnswerQuestID"]).value
+            data["answerQuestID"] = worksheet.cell(
+                row, column_names["AnswerQuestID"]
+            ).value
             data["question"] = {"choices": choices}
 
             correct_answer = str(
-                worksheet.cell(row, column_names["MultiChoiceAndMultiChoiceAnswerCorrectAnswer"]).value
+                worksheet.cell(
+                    row, column_names["MultiChoiceAndMultiChoiceAnswerCorrectAnswer"]
+                ).value
             )
             if not correct_answer:
                 if "," not in correct_answer:
@@ -78,15 +101,17 @@ def import_journeys(db: FirestoreClient, worksheet: Worksheet) -> None:
                     # subtract 1 from the correct answer elements for zero based indexing
                     correct_answer = [int(x) - 1 for x in correct_answer]
                 data["correctAnswer"] = correct_answer
-
-        elif quest_type == "multiChoiceAnswer":
+        case "multiChoiceAnswer":
             for index in range(0, 6):
-                if worksheet.cell(row, index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"]).value:
+                if worksheet.cell(
+                    row, index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"]
+                ).value:
                     choice = {
                         "id": index,
                         "option": worksheet.cell(
                             row,
-                            index + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"],
+                            index
+                            + column_names["MultiChoiceAndMultiChoiceAnswerChoice1"],
                         ).value,
                         "totalAnswer": 0,
                     }
@@ -94,19 +119,21 @@ def import_journeys(db: FirestoreClient, worksheet: Worksheet) -> None:
 
             data["total"] = 0
             data["question"] = {"choices": choices}
-
-        elif quest_type == "message":
-            data["imageUrl"] = worksheet.cell(row, column_names["MessageQuestImageurl"]).value
+        case "message":
+            data["imageUrl"] = worksheet.cell(
+                row, column_names["MessageQuestImageurl"]
+            ).value
             data["body"] = worksheet.cell(row, column_names["MessageQuestBody"]).value
-
-        elif quest_type == "communityResponse":
-            data["title"] = worksheet.cell(row, column_names["QuestionCommunityResponse"]).value
-
-        elif quest_type == "madlib":
+        case "communityResponse":
+            data["title"] = worksheet.cell(
+                row, column_names["QuestionCommunityResponse"]
+            ).value
+        case "madlib":
             data["question"] = worksheet.cell(row, column_names["MadLibQuestion"]).value
-
-        elif quest_type == "tapAndDrag":
-            choicesList = str(worksheet.cell(row, column_names["Tap&DragAnswers"]).value).split(",")
+        case "tapAndDrag":
+            choicesList = str(
+                worksheet.cell(row, column_names["Tap&DragAnswers"]).value
+            ).split(",")
             choices = []
             for index in range(0, len(choicesList)):
                 choice = {"id": index, "text": choicesList[index]}
@@ -117,31 +144,66 @@ def import_journeys(db: FirestoreClient, worksheet: Worksheet) -> None:
                 if worksheet.cell(row, index + column_names["Tap&DragId1"]).value:
                     zone = {
                         "id": index,
-                        "text": worksheet.cell(row, index + column_names["Tap&DragId1"]).value,
+                        "text": worksheet.cell(
+                            row, index + column_names["Tap&DragId1"]
+                        ).value,
                     }
                     zones.append(zone)
 
             data["answers"] = choices
             data["zones"] = zones
+        case _:
+            print(
+                f"warning: invalid quest type: found '{quest_type}', skipping {quest_str}\n"
+            )
+            return None
 
-        else:
-            # invalid quest type found, skip uploading
-            print(f"\nwarning: invalid quest type, found '{quest_type}': skipping upload")
-            continue
-
-        chapter_id = str(worksheet.cell(row, column_names["EveryQuestChapter"]).value)
-        quest_id = str(worksheet.cell(row, column_names["EveryQuestId"]).value)
-
-        path = f"journeys/{journey_id}/chapters/{chapter_id}/quests"
-        print(f"\n{path}/{quest_id}")
-        db.collection(path).document(quest_id).set(data)
+    return {
+        "journey_id": journey_id,
+        "chapter_id": chapter_id,
+        "quest_id": quest_id,
+        "data": data,
+    }
 
 
-def import_journey_metadata(db: FirestoreClient, worksheet: Worksheet) -> None:
+def import_quest_data(db: FirestoreClient, worksheet: Worksheet) -> None:
     column_names = {}
     current = 1
+    columns = worksheet.iter_cols(
+        min_col=0, min_row=3, max_col=worksheet.max_column, max_row=3
+    )
+    for column in columns:
+        column_names[column[0].value] = current
+        current += 1
 
-    for column in worksheet.iter_cols(min_col=0, min_row=1, max_col=worksheet.max_column, max_row=1):
+    for row in range(4, worksheet.max_row):
+        if worksheet.cell(row, 1).value is None:
+            break
+
+        quest = None
+        try:
+            quest = parse_quest_row(worksheet, row, column_names)
+        except ValueError as e:
+            print(f"{e}\n")
+
+        if quest is None:
+            continue
+
+        journey_id = quest["journey_id"]
+        chapter_id = quest["chapter_id"]
+        quest_id = quest["quest_id"]
+        data = quest["data"]
+
+        path = f"journeys/{journey_id}/chapters/{chapter_id}/quests"
+        db.collection(path).document(str(quest_id)).set(data)
+
+
+def import_chapter_metadata(db: FirestoreClient, worksheet: Worksheet) -> None:
+    column_names = {}
+    current = 1
+    for column in worksheet.iter_cols(
+        min_col=0, min_row=1, max_col=worksheet.max_column, max_row=1
+    ):
         column_names[column[0].value] = current
         current += 1
 
@@ -151,6 +213,8 @@ def import_journey_metadata(db: FirestoreClient, worksheet: Worksheet) -> None:
 
         if journey_id is None:
             break
+
+        print(f"importing chapter metadata for {journey_id}:{chapter_id}\n")
 
         data = {
             "name": worksheet.cell(row, column_names["name"]).value,
@@ -163,8 +227,37 @@ def import_journey_metadata(db: FirestoreClient, worksheet: Worksheet) -> None:
         }
 
         path = f"journeys/{journey_id}/chapters"
-        print(f"\n{path}/{chapter_id}")
         db.collection(path).document(str(chapter_id)).set(data)
+
+
+def import_journey_metadata(db: FirestoreClient, worksheet: Worksheet) -> None:
+    column_names = {}
+    current = 1
+    for column in worksheet.iter_cols(
+        min_col=0, min_row=1, max_col=worksheet.max_column, max_row=1
+    ):
+        column_names[column[0].value] = current
+        current += 1
+
+    for row in range(2, worksheet.max_row + 1):
+        if worksheet.cell(row, 1).value is None:
+            break
+
+        try:
+            journey_id = int(worksheet.cell(row, column_names["journey"]).value)  # type: ignore
+        except ValueError as e:
+            print(f"{e}\n")
+            continue
+
+        print(f"importing journey metadata for {journey_id}\n")
+
+        data = {
+            "name": worksheet.cell(row, column_names["name"]).value,
+            "image": worksheet.cell(row, column_names["image"]).value,
+            "author": worksheet.cell(row, column_names["author"]).value,
+        }
+
+        db.collection("journeys").document(str(journey_id)).set(data)
 
 
 def import_quests(import_file):
@@ -173,19 +266,23 @@ def import_quests(import_file):
         worksheet_filename = import_file
         workbook = load_workbook(worksheet_filename)
 
-        journey_worksheet_name = "journey_data"
-        journey_metadata_worksheet_name = "chapter_metadata"
+        quest_worksheet_name = "quest_data"
+        chapter_metadata_worksheet_name = "chapter_metadata"
+        journey_metadata_worksheet_name = "journey_metadata"
 
-        journey_worksheet = workbook[journey_worksheet_name]
+        quest_worksheet = workbook[quest_worksheet_name]
+        chapter_metadata_worksheet = workbook[chapter_metadata_worksheet_name]
         journey_metadata_worksheet = workbook[journey_metadata_worksheet_name]
 
-        print("Importing journeys...")
-        import_journeys(db, journey_worksheet)
+        print("Importing quests...\n")
+        import_quest_data(db, quest_worksheet)
 
-        print("\nImporting journey metadata...")
+        print("\nImporting chapter metadata...\n")
+        import_chapter_metadata(db, chapter_metadata_worksheet)
+
+        print("\nImporting journey metadata...\n")
         import_journey_metadata(db, journey_metadata_worksheet)
 
         print("\nFinished import!")
         output = buffer.getvalue()
     return output
-
